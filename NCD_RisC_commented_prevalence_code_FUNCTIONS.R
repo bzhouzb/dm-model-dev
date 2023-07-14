@@ -107,11 +107,20 @@ u.prop.function <- function(i, tPtsPer, V1Inv.diag, Vinv.M, theta.star, theta.ol
 ##### Functions used in Metropolis-Hastings updates                            #
 ################################################################################
 ##### Function used to calculate log likelihoods
-LogLik <- function(alpha) {
-    q <- pnorm(alpha) 
-    y <- round(prev*number)  
-    n <- number 
-    return(dbinom(y,n,q,log=TRUE))
+LogLik <- function(alpha, zeta) {
+    p <- pnorm(alpha)
+    q <- pnorm(zeta) * p
+    r <- (p - q) / (1 - q)
+
+    lik1 <- dbinom(y_P, number, p[flag == 0], log = TRUE)
+    lik2 <- dbinom(y_Q, number_q, q[flag == 1], log = TRUE)
+    lik3 <- dbinom(y_R, number_r, r[flag == 1], log = TRUE)
+
+    res <- rep(NA, I)
+    res[flag == 0] <- lik1
+    res[flag == 1] <- lik2 + lik3
+
+    return(res)
 }
 
 ##### Function used to calculate log likelihood for study-specific random effects

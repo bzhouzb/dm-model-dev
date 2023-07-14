@@ -1,8 +1,6 @@
 #adapted for diabetes initial runs AR April 2023
-
-
-
-
+#Adapted by BZ for dual liklihood 3/7/23
+#adapted by AR for initial test run 6/7/23
 
 ################################################################################
 # This code fits a Bayesian hierarchical model to metabolic risk factor data   #
@@ -54,7 +52,8 @@
 
 
 variable            <- "prev_DM_fgl_70_hba1c_65_self_med" # Set variable name
-mod.no              <- 4                                                             # Set a unique model identifier: this can be any number or a character string
+components          <- c("prev_DM_diag", "prev_DM_fgl_70_hba1c_65_over_no_diag")        # Set variable names for the components that make up the variable
+mod.no              <- 51                                                               # Set a unique model identifier: this can be any number or a character string
 start.year          <- 1980                                                             # Set start year for analysis
 end.year            <- 2021# Set end year for analysis
 minimum.age         <- 18                                                               # Set minimum age of analysis (included)
@@ -138,20 +137,25 @@ covar                   <- subset(covar, data_year >= start.year & data_year <= 
 ##### Superregion: superregion names, which must match indexing file           #
 ################################################################################
 data                    <- read.csv(data.file.name, header = TRUE, stringsAsFactors = FALSE)  # Load dataset
-##add on meta data 
-meta <- read.csv(metadata.file.name, header = TRUE, stringsAsFactors = FALSE)
-meta <- meta[,c('id_study','iso','mid_year','survey','survey_type','urban_rural')]
-data <- merge(data, meta, by = c('id_study'))
 
 
-data[data$sex == 'male',c('sex')] <- 1
-data[data$sex == 'female',c('sex')] <- 2
+
+# get the n/p for total and the components
 n_var <- gsub('prev', 'n', gsub('mean', 'n', variable))
 data$number             <- round(data[,n_var])
 data$prev               <- data[,variable]
 data$id_study           <- as.character(data$id_study)                                                          
 data$mid_year   <- ifelse(data$mid_year >= (start.year - 3) & data$mid_year < start.year & 
                             data$survey_type == "National", start.year, data$mid_year)                          # Include national studies from up to 3 years before the minimum data year
+n_comp_var <- gsub('prev', 'n', gsub('mean', 'n', components))
+data$number_q             <- round(data[,n_comp_var[1]])
+data$number_r             <- round(data[,n_comp_var[2]])
+data$prev_q               <- data[,components[1]]
+data$prev_r               <- data[,components[2]]
+
+cwvar_probit_var <- gsub('prev', 'cwvar_probit', gsub('mean', 'cwvar_probit', variable))
+data$cwvar_probit <- data[,cwvar_probit_var]
+
 
 # Added by NP in case ISO is missing from data
 if (!('iso' %in% names(data))){
@@ -160,14 +164,14 @@ if (!('iso' %in% names(data))){
 
 
 data     <- data[,c("id_study","mid_year","iso","survey_type","urban_rural",
-                    "sex","age","number","prev")] # Columns used in analysis
+                    "sex","age","number","prev","number_q","prev_q","number_r","prev_r","cwvar_probit","flag")] # Columns used in analysis
 colnames(data)[colnames(data)=="mid_year"] <- "data_year"
 
 
 
 data     <- subset(data, data_year>=start.year & data_year<=end.year &                                          # Subset to years within range
                      age >= minimum.age & age < maximum.age)                                 # Subset to ages within range
-data     <- subset(data, number >1 & !is.na(prev))                                                              # Subset to rows with data
+data     <- subset(data, (number >1 & !is.na(prev) | (number_q > 1 & !is.na(prev_q) & number_r > 1 & !is.na(prev_r))))                                                              # Subset to rows with data
 
 subset   <- subset(data, sex==sex.val)     # Subset data for gender being modelled
 
@@ -178,12 +182,22 @@ subset[subset$iso == 'HKG',c('iso')] <- 'CHN'
 subset   <- merge(subset,covar,by=c("data_year","iso"),all.x=TRUE) # Add country-region lookup info and perurb data
 subset   <- subset[order(subset$Superregion,subset$Region,subset$Country,subset$data_year,subset$id_study),]
 
+# subset number/prev variable for relevant rows: flag = 0 for studies with 1-piece info and flag = 1 for those with 2-piece info
+#flag     <- subset$flag
+number   <- subset$number[subset$flag == 0]
+prev     <- subset$prev[subset$flag == 0]
+number_q <- subset$number_q[subset$flag == 1]
+prev_q   <- subset$prev_q[subset$flag == 1]
+number_r <- subset$number_r[subset$flag == 1]
+prev_r   <- subset$prev_r[subset$flag == 1]
+y_P      <- round(prev * number)
+y_Q      <- round(prev_q * number_q)
+y_R      <- round(prev_r * number_r)
 
-
-subset   <- subset[,c("iso", "id_study", "sex", "age", "number", "prev", "data_year",
-                      "survey_type", "urban_rural", "Country", "Region", "Superregion", "perurb")]
-colnames(subset) <- c("iso","uid","sex.final","age","number","prev","data_year",
-                      "coverage","scope","country","region","sregion", "perurb")    
+subset   <- subset[,c("iso", "id_study", "sex", "age", "cwvar_probit","flag",#"number", "prev", "number_q", "prev_q", "number_r", "prev_r", "flag",
+                      "data_year", "survey_type", "urban_rural", "Country", "Region", "Superregion", "perurb")]
+colnames(subset) <- c("iso","uid","sex.final","age","cwvar_probit","flag",#"number","prev",
+                      "data_year","coverage","scope","country","region","sregion", "perurb")
 
 
 
@@ -201,7 +215,7 @@ ageMat.prime            <- t(ageMat)                                            
 ng                      <- ncol(ageMat)
 
 ##### Calculate constants ######################################################
-I                       <- length(prev)                                 # Number of survey-year-sex-age datapoints
+I                       <- nrow(subset)                                 # Number of survey-year-sex-age datapoints
 J                       <- length(unique(covar$Country))                # Number of countries for which estimates are made (as opposed to number of countries in the dataset)
 K                       <- length(unique(covar$Region))                 # Number of regions for which estimates are made
 L                       <- length(unique(covar$Superregion))            # Number of superregions for which estimates are made
@@ -267,7 +281,6 @@ which.time                  <- time - min(time) + 1                             
 which.countryTime           <- match(paste(country,data_year),paste(country.time.match$country,country.time.match$year)) # Identifies position of each datapoint's country-year
 which.regionTime            <- match(paste(region,data_year),paste(region.time.match$region,region.time.match$year))     # Identifies position of each datapoint's region-year
 which.sregionTime           <- match(paste(sregion,data_year),paste(sregion.time.match$sregion,sregion.time.match$year)) # Identifies position of each datapoint's superregion-year
-#multipleRegionsInSregion    <- as.logical(!rowSums(table(covar$Region,covar$Superregion)[,(1:L)[colSums(table(covar$Region,covar$Superregion)>0)==1]])>0)
 multipleRegionsInSregion    <- as.logical(!(table(covar$Region,covar$Superregion)[,(1:L)[colSums(table(covar$Region,covar$Superregion)>0)==1]])>0)
                                                                                                                # Identifies superregions comprising multiple regions
 Z                           <- sum(multipleRegionsInSregion)                                                    # Number of regions in multi-region superregions
@@ -360,6 +373,8 @@ v                       <- matrix(NA, nIts, K*T)        # Empty matrix for compo
 sv                      <- matrix(NA, nIts, L*T)        # Empty matrix for component of nonlinear trend at superregional level
 w                       <- matrix(NA, nIts, T)          # Empty matrix for component of nonlinear trend at global level
 alpha                   <- matrix(NA, nIts, I)          # Empty matrix for latent variable in prevalence model
+zeta                    <- matrix(NA, nIts, I)          # Empty matrix for probit of q over p in prevalence model
+
 
 ##### The following lines set initial values for model parameters ##############
 phi_c.prop.sd           <- 0.5                          # Initial value for proposal SD for log variance for normal prior for country random intercepts (log kappa_a^c)
@@ -383,6 +398,7 @@ sigma2_r.prop.sd        <- rep(0.5, ng)                # Initial values for prop
 sigma1_s.prop.sd        <- rep(0.5, ng)                # Initial values for proposal SDs for log variances for superregion-specific random slope in spline coefficients (log omiga_s)
 sigma2_s.prop.sd        <- rep(0.5, ng)                # Initial values for proposal SDs for log variances for superregion-specific random intercept in spline coefficients (log s)
 alpha.prop.var          <- rep(0.1, I)                 # Initial values for proposal variance for the latent variable (alpha)
+zeta.prop.var           <- rep(0.1, I)                 # Initial values for proposal variance for probit of q over p (zeta)
 
 phi_s[1]                <-(-3)                         # Initial value for log variance for normal prior for superregion random intercepts (log kappa_a^r)
 phi_r[1]                <-(-3)                         # Initial value for log variance for normal prior for region random intercepts (log kappa_a^s)
@@ -411,7 +427,8 @@ u[1,]                   <- rep(0, J*T)                 # Initial values for comp
 v[1,]                   <- rep(0, K*T)                 # Initial values for component of nonlinear trend at regional level
 sv[1,]                  <- rep(0, L*T)                 # Initial values for component of nonlinear trend at superregional level
 w[1,]                   <- rep(0, T)                   # Initial values for component of nonlinear trend at global level
-alpha[1,]               <- rep(0, I)                   # Initial values for latent variable
+alpha[1,]               <- rep(0, I)                   # Initial values for latent variable (alpha)
+zeta[1,]                <- rep(0, I)                   # Initial values for probit of q over p (zeta)
 
 ###### Overdisperse the starting values ########################################
 theta.max               <- 20                                                               # Constrain theta values for random walk to 20
@@ -443,7 +460,8 @@ while(foo > theta.max | foo < theta_s[1]) foo <- rnorm(1, theta_g[1], theta_g.pr
 theta_g[1] <- foo                                                                            # Set value
 
 tau[1]        <- rnorm(1, tau[1], tau.prop.sd/2.4)                                           # Log variance for within-study errors that differ between age groups (log tau)
-alpha[1,]     <- rnorm(I, alpha[1,], alpha.prop.var/2.4)                                     # Variances for latent variable (alpha)
+alpha[1,]     <- rnorm(I, alpha[1,], sqrt(alpha.prop.var)/2.4*sqrt(2))                       # Variances for latent variable (alpha)
+zeta[1,]      <- rnorm(I, zeta[1,], sqrt(zeta.prop.var)/2.4*sqrt(2))                         # Variances for probit of q over p (zeta)
 sigma1_c[1,]  <- exp(rnorm(ng, log(sigma1_c[1,]), sigma1_c.prop.sd/2.4*sqrt(6)))             # Variances for country-specific random intercept in spline coefficients (log c)
 sigma2_c[1,]  <- exp(rnorm(ng, log(sigma2_c[1,]), sigma2_c.prop.sd/2.4*sqrt(6)))             # Variances for country-specific random slope in spline coefficients (log omiga_c)
 sigma1_r[1,]  <- exp(rnorm(ng, log(sigma1_r[1,]), sigma1_r.prop.sd/2.4*sqrt(6)))             # Variances for region-specific random intercept in spline coefficients (log r)
@@ -637,11 +655,11 @@ u.current               <- u[1,]                                                
 v.current               <- v[1,]                                                # Current value holder for component of nonlinear trend at regional level
 sv.current              <- sv[1,]                                               # Current value holder for component of nonlinear trend at superregional level
 w.current               <- w[1,]                                                # Current value holder for component of nonlinear trend at global level
-alpha.current           <- alpha[1,]                                            # Current value holder for latent variable
-deviance[1]             <- (sum(LogLik(alpha[1,])) +                            # Calculate the initial deviance
+alpha.current           <- alpha[1,]                                            # Current value holder for latent variable (alpha)
+zeta.current            <- zeta[1,]                                             # Current value holder for probit of q over p (zeta)
+deviance[1]             <- (sum(LogLik(alpha[1,], zeta[1,])) +                  # Calculate the initial deviance
                             sum(dnorm(alpha[1,], mean = F.theta.Mm + R.age.spam %*% gamma[1,], sd = sqrt(Sigma.diag), log=TRUE))
                             ) * (-2) 
-
 
 
 
@@ -688,7 +706,8 @@ for (i in 2:nLong) {                                                            
         phi_natl.prop.sd    <- phi_natl.prop.sd * adaptJump(3, phi.acc/freq.val)      # Tune the proposal SD for log variance of random effects for national studies (log nu_"national")
         phi_subn.prop.sd    <- phi_subn.prop.sd * adaptJump(3, phi.acc/freq.val)      # Tune the proposal SD for log variance of random effects for subnational studies (log nu_s)
         phi_comm.prop.sd    <- phi_comm.prop.sd * adaptJump(3, phi.acc/freq.val)      # Tune the proposal SD for log variance of random effects for community studies (log nu_c)
-        alpha.prop.var		<- alpha.prop.var 	* adaptJump(n=rep(1,I), pjump=alpha.acc/freq.val, type='ben', i=i, K=freq.val) 	# Tune the proposal variance for latent variable (alpha)
+        alpha.prop.var		  <- alpha.prop.var 	* adaptJump(n=rep(2,I), pjump=alpha.acc/freq.val, type='ben', i=i, K=freq.val) 	# Tune the proposal variance for latent variable (alpha)
+        zeta.prop.var		    <- zeta.prop.var 	* adaptJump(n=rep(2,I), pjump=alpha.acc/freq.val, type='ben', i=i, K=freq.val) 	# Tune the proposal variance for probit of q over p (zeta)
         for (j in 1:ng) {
             sigma1_c.prop.sd[j] <- sigma1_c.prop.sd[j] * adaptJump(6, sigmas.acc[j]/freq.val)  # Tune proposal variances for log variances for country-specific random intercept in spline coefficients (log c)
             sigma2_c.prop.sd[j] <- sigma2_c.prop.sd[j] * adaptJump(6, sigmas.acc[j]/freq.val)  # Tune proposal variances for log variances for country-specific random slope in spline coefficients (log omiga_c)
@@ -697,33 +716,36 @@ for (i in 2:nLong) {                                                            
             sigma1_s.prop.sd[j] <- sigma1_s.prop.sd[j] * adaptJump(6, sigmas.acc[j]/freq.val)  # Tune proposal variances for log variances for superregion-specific random intercept in spline coefficients (log s)
             sigma2_s.prop.sd[j] <- sigma2_s.prop.sd[j] * adaptJump(6, sigmas.acc[j]/freq.val)  # Tune proposal variances for log variances for superregion-specific random slope in spline coefficients (log omiga_s)
         }
-        
+
         phi.acc             <- 0                                                    # Set the acceptance count for the study-specific random effects to zero
-        tau.acc             <- 0                                                    # Set the acceptance count for the within-study errors that differ between age groups to zero
-        theta_c.acc         <- 0                                                    # Set the acceptance count for the log precision parameter for random walk at country level to zero
+        tau.acc             <- 0                                                    # Set the acceptance count for the within-study errors that differ between age groups to zero        theta_c.acc         <- 0                                                    # Set the acceptance count for the log precision parameter for random walk at country level to zero
         theta_r.acc         <- 0                                                    # Set the acceptance count for the log precision parameter for random walk at region level to zero
         theta_s.acc         <- 0                                                    # Set the acceptance count for the log precision parameter for random walk at superregion level to zero
         theta_g.acc         <- 0                                                    # Set the acceptance count for the log precision parameter for random walk at global level to zero
         V.acc               <- 0                                                    # Set the acceptance count for the linear random intercepts and slopes to zero
         sigmas.acc          <- rep(0, ng)                                           # Set the acceptance counts for the random spline coefficients to zero
-        alpha.acc           <- rep(0, I)                                            # Set the acceptance counts for the latent variable (alpha) to zero
+        alpha.acc           <- rep(0, I)                                            # Set the acceptance counts for the latent variable (alpha/zeta) to zero
     }                                                                               # Close tuning loop
 
     #### Update latent variable (alpha) ########################################
-    alpha.star	<- rnorm(I, alpha.current, sqrt(alpha.prop.var))                            # Propose new value for variance of latent variable (alpha)
-    R <- exp( 	                                                                            # Acceptance ratio R for proposed state
-          dnorm(alpha.star, mean = F.theta.Mm + R.age.spam %*% gamma.current,               # Log likelihood of proposed state for latent variable (alpha)
-                sd = sqrt(Sigma.diag), log=TRUE)
-        - dnorm(alpha.current, mean = F.theta.Mm + R.age.spam %*% gamma.current,            # Log likelihood of existing state for latent variable (alpha)
-                sd = sqrt(Sigma.diag), log=TRUE)
-        + LogLik(alpha.star)                                                                # Log likelihood of binomial process given proposed alpha
-        - LogLik(alpha.current) )                                                           # Log likelihood of binomial process given existing alpha
-    accept <- which(runif(I) < R)                                                           # Metropolis-Hastings update: accept proposed state with probability R
+    alpha.star	<- rnorm(I, alpha.current, sqrt(alpha.prop.var))                          # Propose new value for variance of latent variable (alpha)
+    zeta.star	  <- rnorm(I, zeta.current, sqrt(zeta.prop.var))                            # Propose new value for variance of probit of q over p (zeta)
+
+    R <- exp( 	                                                                          # Acceptance ratio R for proposed state
+      dnorm(alpha.star, mean = F.theta.Mm + R.age.spam %*% gamma.current,                 # Log likelihood of proposed state for latent variable (alpha)
+            sd = sqrt(Sigma.diag), log=TRUE)
+      - dnorm(alpha.current, mean = F.theta.Mm + R.age.spam %*% gamma.current,            # Log likelihood of existing state for latent variable (alpha)
+              sd = sqrt(Sigma.diag), log=TRUE)
+      + LogLik(alpha.star, zeta.star)                                                     # Log likelihood of binomial process given proposed alpha and zeta
+      - LogLik(alpha.current, zeta.current) )                                             # Log likelihood of binomial process given existing alpha and zeta
+    accept <- which(runif(I) < R)                                                         # Metropolis-Hastings update: accept proposed state with probability R
     if (length(accept) > 0) {
-        alpha.current[accept] <- alpha.star[accept]                                         # If accepted, update alpha
-        alpha.acc[accept]     <- alpha.acc[accept] + 1                                      # If accepted, increment the acceptance count for alpha
+      alpha.current[accept] <- alpha.star[accept]                                         # If accepted, update alpha
+      zeta.current[accept] <- zeta.star[accept]                                           # If accepted, update zeta
+      alpha.acc[accept]     <- alpha.acc[accept] + 1                                      # If accepted, increment the acceptance count for alpha/zeta
     }
-    
+
+
     #### STUDY-SPECIFIC RANDOM EFFECTS: update variances #######################
     #### see pp8-9 and 13 of Danaei et al ######################################
     ############################################################################
@@ -1086,7 +1108,8 @@ for (i in 2:nLong) {                                                            
         sigma1_s[j,]    <- sigma1_s.current     # Save current state for variances for country-specific random intercept in spline coefficients
         sigma2_s[j,]    <- sigma2_s.current     # Save current state for variances for country-specific random slope in spline coefficients
         alpha[j,]       <- alpha.current        # Save current state for latent variable (alpha)
-        deviance[j]     <- (sum(LogLik(alpha[j,])) + sum(dnorm(alpha[j,], mean = F.theta.Mm + R.age.spam %*% gamma[j,], sd = sqrt(Sigma.diag), log=TRUE))) * (-2) # Save deviance
+        zeta[j,]        <- zeta.current         # Save current state for probit of q over p (zeta)
+        deviance[j]     <- (sum(LogLik(alpha[j,], zeta[j,])) + sum(dnorm(alpha[j,], mean = F.theta.Mm + R.age.spam %*% gamma[j,], sd = sqrt(Sigma.diag), log=TRUE))) * (-2) # Save deviance
     }                                           # End of thinning loop
 }                                               # End of MCMC loop
 
@@ -1127,6 +1150,7 @@ sigma2_r    <- sigma2_r[burnt,]                 # Save variances for country-spe
 sigma1_s    <- sigma1_s[burnt,]                 # Save variances for country-specific random intercept in spline coefficients
 sigma2_s    <- sigma2_s[burnt,]                 # Save variances for country-specific random slope in spline coefficients
 alpha       <- alpha[burnt,]                    # Save latent variable (alpha)
+zeta        <- zeta[burnt,]                     # Save probit of q over p (zeta)
 deviance    <- deviance[burnt]                  # Save deviance
 tracePlots()                                    # Output final traceplots
 save.image(paste0(outdirname, filename, "Burnt.RData")) # Save R workspace containing results
