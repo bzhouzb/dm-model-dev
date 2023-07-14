@@ -47,7 +47,6 @@
 #setwd('E:/Model4, New Asia Hierarchy')
 #seedVal             <- 1                                                                # Assign each chain a unique seed value
 #sex                 <- "female"                                                           # Set gender: must be either "male" or "female"
-                                     
 ####################
 
 
@@ -470,7 +469,7 @@ sigma1_s[1,]  <- exp(rnorm(ng, log(sigma1_s[1,]), sigma1_s.prop.sd/2.4*sqrt(6)))
 sigma2_s[1,]  <- exp(rnorm(ng, log(sigma2_s[1,]), sigma2_s.prop.sd/2.4*sqrt(6)))             # Variances for superregion-specific random slope in spline coefficients (log omiga_s)
 
 ##### Diagonal of likelihood variance matrix ###################################
-Sigma.diag              <- rep(exp(tau[1]), I)                                      # Diagonal of variance matrix, including within-study errors that differ between age groups
+Sigma.diag              <- cwvar_probit + exp(tau[1])                               # Diagonal of variance matrix, including within-study errors that differ between age groups
 SigmaInv.diag           <- 1/Sigma.diag                                             # Inverse of diagonal of variance matrix
 
 ##### Variance of study-specific random effects ################################
@@ -1060,7 +1059,7 @@ for (i in 2:nLong) {                                                            
     ##### TAU: update using Metropolis-Hastings ################################
     ############################################################################
     tau.star                <- rnorm(1, tau.current, tau.prop.sd)                                       # Propose tau* value on log scale
-    Sigma.diag.star         <- rep(exp(tau.star), I)                                                    # Variance diagonal with tau* value
+    Sigma.diag.star         <- cwvar_probit + exp(tau.star)                                             # included cw variance AR 11/07/23
     SigmaInv.diag.star      <- 1/Sigma.diag.star                                                        # Inverse variance diagonal including tau* value
     R <- exp(                                                                                           # Posterior probability R for proposed state
         sum(dnorm(alpha.current, mean = F.theta.Mm + R.age.spam %*%                                     # Log likelihood of proposed state
